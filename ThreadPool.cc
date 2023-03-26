@@ -8,24 +8,22 @@ ThreadPool::ThreadPool(int initCount){
 
 	for (int i = 0 ; i < initCount; ++i){
 		threads_.push_back(std::thread(
-			[&](){
-				while(isRunning){
-					
+			[this](){
+				while(true){
 					std::unique_lock<std::mutex> lck(mtx);
-					cv.wait(lck, [&](){return !tasks_.empty() || !isRunning;});
+					//cv.wait(lck, [this](){std::cout<<!tasks_.empty()<<" "<<!isRunning<<std::endl; return !tasks_.empty() || !isRunning;});
+					while (isRunning && tasks_.empty()){
+						std::cout<<isRunning<<" "<<tasks_.empty()<<std::endl;
+						cv.wait(lck);
+					}
+					
 					if (!isRunning && tasks_.empty()){
 						std::cout<<std::setbase(16)<<std::this_thread::get_id()<<" returns"<<std::endl;
 						return;
 					}
-					/*
-					std::cout<<std::setbase(16)<<"thread "<<std::this_thread::get_id()<<": "<<tasks_.size()<<std::endl;
-					std::this_thread::sleep_for(std::chrono::milliseconds(2));
-					*/
-
-					voidFunc task = tasks_.front();
+					voidFunc task = std::move(tasks_.front());
 					tasks_.pop();
-					task();
-				
+					task();		
 				}
 			}
 		)
@@ -33,38 +31,41 @@ ThreadPool::ThreadPool(int initCount){
 	}
 
 	for (auto& t: threads_){
-		std::cout<<std::setbase(16)<<t.get_id()<<std::endl;
+		std::cout<<std::setbase(16)<<t.get_id()<<" "<<t.joinable()<<std::endl;
 	}
 }
 
 
 ThreadPool::~ThreadPool(){
 	std::unique_lock<std::mutex> lck(mtx);
-	std::cout<<"shutting down threadpool"<<std::endl;
-	stop();
+	isRunning = false;
+	while (!tasks_.empty()){
+		tasks_.pop();
+	}
+	lck.unlock();
+	cv.notify_all();
+	for (std::thread& t: threads_){
+		std::cout<<std::setbase(16)<<t.get_id()<<" set to join"<<std::endl;
+		t.join();
+	}
 }
 
 
 
 void ThreadPool::start(){
-	isRunning = true;
 }
 
 
 void ThreadPool::stop(){	
-	isRunning = false;
-	cv.notify_all();
-	for (auto& t: threads_){
-		if (t.joinable()){
-			t.join();
-			std::cout<<std::setbase(16)<<"thread "<<t.get_id()<<" set to join"<<std::endl;
-		}
-	}
 }
 
 void ThreadPool::addTask(voidFunc func){
+	std::unique_lock<std::mutex> lck(mtx);
+	if (!isRunning){
+		throw std::runtime_error("enqueue on stopping threadpool");
+	}
 	tasks_.push(func);
-	cv.notify_all();
+	cv.notify_one();
 }
 
 
@@ -74,7 +75,8 @@ void printNum(){
 
 #ifdef THREADPOOL
 int main(){
-	ThreadPool pool(5);
+	ThreadPool pool(6);
+	pool.addTask(printNum);
 	pool.addTask(printNum);
 	sleep(1);
 	return 0;
