@@ -1,6 +1,8 @@
 #include "ThreadPool.h"
 
 #include <unistd.h>
+#include <time.h>
+
 
 ThreadPool::ThreadPool(int initCount){
 	assert(initCount > 0);
@@ -10,23 +12,27 @@ ThreadPool::ThreadPool(int initCount){
 		threads_.push_back(std::thread(
 			[this](){
 				while(true){
-					std::unique_lock<std::mutex> lck(mtx);
-					//cv.wait(lck, [this](){std::cout<<!tasks_.empty()<<" "<<!isRunning<<std::endl; return !tasks_.empty() || !isRunning;});
-					while (isRunning && tasks_.empty()){
-						std::cout<<isRunning<<" "<<tasks_.empty()<<std::endl;
-						cv.wait(lck);
+					voidFunc task;
+					// 获取任务必须加锁，执行任务不需要加锁，除非任务和任务之间共享数据，不过这里不会
+					// 大括号，限制unique_lock的作用域，否则lck不会及时释放mtx
+					// 在这个场景下，mtx是否被释放，直接影响到了threadpool在析构时对于线程的处理
+					{
+						std::unique_lock<std::mutex> lck(mtx);
+						
+						while (isRunning && tasks_.empty()){
+							cv.wait(lck);
+						}
+						if (!isRunning && tasks_.empty()){
+							std::cout<<std::setbase(16)<<std::this_thread::get_id()<<" returns"<<std::endl;
+							return;
+						}
+						task = std::move(tasks_.front());
+						tasks_.pop();
 					}
-					
-					if (!isRunning && tasks_.empty()){
-						std::cout<<std::setbase(16)<<std::this_thread::get_id()<<" returns"<<std::endl;
-						return;
-					}
-					voidFunc task = std::move(tasks_.front());
-					tasks_.pop();
 					task();		
+					}
 				}
-			}
-		)
+			)
 		);
 	}
 
@@ -37,12 +43,14 @@ ThreadPool::ThreadPool(int initCount){
 
 
 ThreadPool::~ThreadPool(){
-	std::unique_lock<std::mutex> lck(mtx);
-	isRunning = false;
+	{	
+		std::unique_lock<std::mutex> lck(mtx);
+		isRunning = false;
+	}
 	while (!tasks_.empty()){
 		tasks_.pop();
 	}
-	lck.unlock();
+	//lck.unlock();
 	cv.notify_all();
 	for (std::thread& t: threads_){
 		std::cout<<std::setbase(16)<<t.get_id()<<" set to join"<<std::endl;
@@ -75,10 +83,14 @@ void printNum(){
 
 #ifdef THREADPOOL
 int main(){
+	time_t start, end;
+	start = clock();
 	ThreadPool pool(6);
-	pool.addTask(printNum);
-	pool.addTask(printNum);
+	for (int i = 0 ; i < 12000; ++i)
+		pool.addTask(printNum);
 	sleep(1);
+	end = clock();
+	std::cout<<"thread pool: "<<double(end - start)/CLOCKS_PER_SEC<<std::endl;
 	return 0;
 }
 #endif
